@@ -1,10 +1,16 @@
 from copy import deepcopy
 import torch
 from torch import nn
-from sklearn import preprocessing
-import numpy as np
-import warnings
-warnings.filterwarnings("ignore", message="Numerical issues were encountered ")
+
+def _standardize_nodes(nodes):
+    """Standardize each feature across nodes, retaining the autograd graph."""
+    nodes = nodes.squeeze(0)
+    mean = nodes.mean(dim=0, keepdim=True)
+    scale = nodes.std(dim=0, unbiased=False, keepdim=True)
+    # Match sklearn's population scaling and near-constant feature guard.
+    scale = torch.where(scale < 10 * torch.finfo(nodes.dtype).eps,
+                        torch.ones_like(scale), scale)
+    return ((nodes - mean) / scale).unsqueeze(0).transpose(2, 1)
 
 def MLP(channels: list, do_bn=True):
     """ Multi-layer perceptron """
@@ -119,12 +125,12 @@ class AttentionalGNN(nn.Module):
         self.mmd = MMD_loss(kernel_type='linear')
     def forward(self, p_nodes_src, p_nodes_tar, dis_nodes_src, dis_nodes_tar):
         flag = 0
-        dev = p_nodes_src[0].device
+        # Keep replacing list entries: GOT consumes these post-CSA tensors.
         for i in range(len(p_nodes_src)):
-            p_nodes_src[i] = torch.tensor(preprocessing.scale(p_nodes_src[i].squeeze(0).cpu().detach().numpy())).to(dev).unsqueeze(0).transpose(2,1)
-            p_nodes_tar[i] = torch.tensor(preprocessing.scale(p_nodes_tar[i].squeeze(0).cpu().detach().numpy())).to(dev).unsqueeze(0).transpose(2,1)
-            dis_nodes_src[i] = self.mlp_dis(torch.tensor(preprocessing.scale(dis_nodes_src[i].squeeze(0).cpu().detach().numpy())).unsqueeze(0).transpose(2,1).to(dev))
-            dis_nodes_tar[i] = self.mlp_dis(torch.tensor(preprocessing.scale(dis_nodes_tar[i].squeeze(0).cpu().detach().numpy())).unsqueeze(0).transpose(2,1).to(dev))
+            p_nodes_src[i] = _standardize_nodes(p_nodes_src[i])
+            p_nodes_tar[i] = _standardize_nodes(p_nodes_tar[i])
+            dis_nodes_src[i] = self.mlp_dis(_standardize_nodes(dis_nodes_src[i]))
+            dis_nodes_tar[i] = self.mlp_dis(_standardize_nodes(dis_nodes_tar[i]))
 
         for layer, name in zip(self.layers, self.names):
             if name == 'cross':
